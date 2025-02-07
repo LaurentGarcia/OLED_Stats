@@ -8,14 +8,14 @@ Mode 0 (Scrolling Mode):
   - Line 0: "IP: <IP>" (static).
   - Line 1: "CPU: <load> | Temp: <temp>" (scrolls if needed).
   - Line 2: "Mem: <mem>" (scrolls if needed).
-  - Line 3: "Disk: <disk>" (scrolls if needed).
+  - Line 3: "Disk: <disk>" (scrolls if needed; all disk info concatenated).
 
 Mode 1 (Disk Overview Mode):
-  - A header "Disk Usage:" is displayed centered on the top row.
-  - The disk information (sizes, used space, and percentages for all disks)
-    scrolls horizontally on the second row.
+  - A header "Disk Usage:" is centered on row 0.
+  - Up to three lines (rows 1, 2, and 3) display one disk each (if available).
+    Each disk line scrolls horizontally if too long.
 
-Adjust the fonts, scroll speeds, and layout as needed.
+Adjust fonts, scroll speeds, and positions as needed.
 """
 
 import time
@@ -29,7 +29,6 @@ import subprocess
 # ---------------------------
 # Setup & Initialization
 # ---------------------------
-
 # Define the OLED reset pin (GPIO 4, active low)
 oled_reset = gpiozero.OutputDevice(4, active_high=False)
 
@@ -49,7 +48,7 @@ oled_reset.off()
 time.sleep(0.1)
 oled_reset.on()
 
-# Create the OLED display object (usually at I2C address 0x3C)
+# Create the OLED display object (usually I2C address 0x3C)
 oled = adafruit_ssd1306.SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=0x3C)
 oled.fill(0)
 oled.show()
@@ -58,7 +57,7 @@ oled.show()
 image = Image.new('1', (WIDTH, HEIGHT))
 draw = ImageDraw.Draw(image)
 
-# Load the main font – using PixelOperator.ttf at size 16.
+# Load main font (using PixelOperator.ttf at size 16)
 try:
     main_font = ImageFont.truetype('PixelOperator.ttf', 16)
 except Exception as e:
@@ -69,7 +68,9 @@ except Exception as e:
 # Helper Functions
 # ---------------------------
 def fetch_metrics():
-    """Fetch system metrics and return them in a dictionary."""
+    """Fetch system metrics and return them in a dictionary.
+       For disk info, split each disk line into a list.
+    """
     metrics = {}
     try:
         metrics['IP'] = subprocess.check_output("hostname -I | cut -d' ' -f1", shell=True).decode('utf-8').strip()
@@ -88,18 +89,23 @@ def fetch_metrics():
     except Exception:
         metrics['Mem'] = "N/A"
     try:
-        # Concatenate info for all disks (each disk matching /dev is processed)
-        metrics['Disk'] = subprocess.check_output(
-            "df -h | awk '$1 ~ /^\\/dev/ {printf \"%s:%s(%s) \", $1, $3, $5}'",
+        # Produce one disk per line. For each disk (lines starting with /dev), output: "dev:used(perc)"
+        raw_disk = subprocess.check_output(
+            "df -h | awk '$1 ~ /^\\/dev/ {printf \"%s:%s(%s)\\n\", $1, $3, $5}'",
             shell=True).decode('utf-8').strip()
+        disk_lines = raw_disk.splitlines()
+        if disk_lines:
+            metrics['Disk'] = disk_lines
+        else:
+            metrics['Disk'] = ["N/A"]
     except Exception:
-        metrics['Disk'] = "N/A"
+        metrics['Disk'] = ["N/A"]
     return metrics
 
 def draw_scrolling_text_infinite(y, text, offset, font=main_font):
     """
-    Draw text with infinite horizontal scrolling at vertical position y.
-    Returns the updated offset.
+    Draws text with infinite horizontal scrolling at vertical position y.
+    Returns updated offset.
     """
     # Use textbbox to compute text width (instead of deprecated textsize)
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -111,7 +117,6 @@ def draw_scrolling_text_infinite(y, text, offset, font=main_font):
     total_length = text_width + spacing
     effective_offset = offset % total_length
     draw.text((-effective_offset, y), text, font=font, fill=255)
-    # Draw second instance if needed for seamless scrolling
     if text_width - effective_offset < WIDTH:
         draw.text((text_width - effective_offset + spacing, y), text, font=font, fill=255)
     return offset + 2  # Increase offset (adjust for scroll speed)
@@ -122,7 +127,7 @@ def display_scrolling_mode(metrics, offsets):
       - Line 0: "IP: <IP>" (static).
       - Line 1: "CPU: <load> | Temp: <temp>" (scrolls).
       - Line 2: "Mem: <mem>" (scrolls).
-      - Line 3: "Disk: <disk>" (scrolls).
+      - Line 3: "Disk: <disk>" (scrolls; concatenated).
     Returns updated offsets.
     """
     draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
@@ -130,38 +135,47 @@ def display_scrolling_mode(metrics, offsets):
     cpu_text = "CPU: " + metrics['CPU'] + " | Temp: " + metrics['Temp']
     offsets['CPU'] = draw_scrolling_text_infinite(16, cpu_text, offsets['CPU'])
     offsets['Mem'] = draw_scrolling_text_infinite(32, "Mem: " + metrics['Mem'], offsets['Mem'])
-    offsets['Disk'] = draw_scrolling_text_infinite(48, "Disk: " + metrics['Disk'], offsets['Disk'])
+    # For Mode 0, concatenate all disk lines into one string.
+    disk_concat = " ".join(metrics['Disk'])
+    offsets['Disk'] = draw_scrolling_text_infinite(48, "Disk: " + disk_concat, offsets['Disk'])
     oled.image(image)
     oled.show()
     return offsets
 
-def display_disk_overview_mode(metrics, disk_offset):
+def display_disk_overview_mode(metrics, disk_offsets):
     """
-    Display only the disk information (for NAS overview) as scrolling text.
-    - A header "Disk Usage:" is shown centered on the top row.
-    - The disk information scrolls horizontally on the second row.
-    Returns the updated disk_offset.
+    Display Disk Overview Mode:
+      - Row 0: Centered header "Disk Usage:"
+      - Rows 1 to 3: Each row displays one disk's info (if available), scrolling horizontally.
+    The disk info is taken from metrics['Disk'] (a list of disk lines).
+    Uses a dictionary disk_offsets for independent horizontal scrolling per disk.
+    Returns updated disk_offsets.
     """
     draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-    # Draw header "Disk Usage:" centered in row 0
+    # Header centered on row 0
     header = "Disk Usage:"
     header_bbox = draw.textbbox((0, 0), header, font=main_font)
     header_width = header_bbox[2] - header_bbox[0]
     header_x = (WIDTH - header_width) // 2
     draw.text((header_x, 0), header, font=main_font, fill=255)
-    # Draw the disk info as scrolling text on row 1 (y = 16)
-    disk_text = metrics['Disk']
-    disk_offset = draw_scrolling_text_infinite(16, disk_text, disk_offset, font=main_font)
+
+    disk_lines = metrics.get('Disk', ["N/A"])
+    # We'll display up to 3 disks (rows 1, 2, and 3 at y=16, 32, 48)
+    for i in range(min(3, len(disk_lines))):
+        y = 16 + i * 16
+        # Use the corresponding offset for this disk line
+        disk_offsets[i] = draw_scrolling_text_infinite(y, disk_lines[i], disk_offsets.get(i, 0), font=main_font)
     oled.image(image)
     oled.show()
-    return disk_offset
+    return disk_offsets
 
 # ---------------------------
 # Main Loop with Mode Switching
 # ---------------------------
-# Offsets for scrolling mode (for CPU, Mem, Disk) and for disk overview mode
+# Offsets for Mode 0 scrolling (for CPU, Mem, Disk concatenated)
 offsets = {'CPU': 0, 'Mem': 0, 'Disk': 0}
-disk_overview_offset = 0
+# Offsets for Disk Overview Mode (one per disk line)
+disk_overview_offsets = {0: 0, 1: 0, 2: 0}
 current_mode = 0  # 0 = scrolling mode (all metrics), 1 = disk overview mode
 mode_start_time = time.time()
 last_update = time.time()
@@ -170,7 +184,7 @@ metrics = fetch_metrics()  # initial metrics
 while True:
     # Switch display mode every MODE_DURATION seconds
     if time.time() - mode_start_time >= MODE_DURATION:
-        current_mode = 1 - current_mode  # Toggle between 0 and 1
+        current_mode = 1 - current_mode  # Toggle mode
         mode_start_time = time.time()
 
     # Update metrics every LOOPTIME seconds
@@ -183,6 +197,6 @@ while True:
         offsets = display_scrolling_mode(metrics, offsets)
         time.sleep(0.1)
     else:
-        # Mode 1: Disk Overview Mode (only disk info scrolling)
-        disk_overview_offset = display_disk_overview_mode(metrics, disk_overview_offset)
+        # Mode 1: Disk Overview Mode (each disk on its own line)
+        disk_overview_offsets = display_disk_overview_mode(metrics, disk_overview_offsets)
         time.sleep(0.1)
