@@ -77,7 +77,10 @@ def draw_scrolling_text_infinite(y, text, offset):
     Returns:
       The updated offset for the next iteration.
     """
-    text_width, _ = draw.textsize(text, font=font)
+    # Use textbbox to compute text dimensions (instead of deprecated textsize)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+
     # If text fits in the display, just draw it and return 0 offset.
     if text_width <= WIDTH:
         draw.text((0, y), text, font=font, fill=255)
