@@ -4,8 +4,7 @@ Enhanced OLED Stats Display for Raspberry Pi
 Based on the original script by Michael Klements, enhanced with dynamic information
 using psutil and a live clock.
 
-Modify by Lauren M Garcia to Support more dynamic information
-
+Modify by Lauren Garcia to make more dynamic information
 """
 
 import time
