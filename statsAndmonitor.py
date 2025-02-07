@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-
 """
-Combined OLED Stats Display with Mode Switching
+Combined OLED Stats Display with Mode Switching for NAS
 
-This script alternates between two display modes every 30 seconds:
+This script alternates every 30 seconds between two display modes:
 
 Mode 0 (Scrolling Mode):
   - Line 0: Static IP address.
-  - Line 1: CPU load and Temperature (infinite horizontal scrolling if needed).
-  - Line 2: Memory usage (scrolling if needed).
-  - Line 3: Disk usage (scrolling if needed).
+  - Line 1: "CPU: <load> | Temp: <temp>" scrolling horizontally if needed.
+  - Line 2: "Mem: <mem>" scrolling horizontally if needed.
+  - Line 3: "Disk: <disk>" scrolling horizontally if needed.
 
-Mode 1 (Icon Mode):
-  - A fixed layout with icons and text for Temperature, Memory, Disk, CPU, and IP.
-    (The layout has been adjusted to use smaller fonts so that the info fits on the 128x64 screen.)
+Mode 1 (Overview Mode):
+  - A fixed layout optimized for NAS monitoring:
+      Row 0: "IP: <IP>"
+      Row 1: "CPU: <load> | Temp: <temp>"
+      Row 2: "Mem: <mem>"
+      Row 3: "Disk: <disk>"
 
-Adjust the scroll speed, fonts, and swap interval as needed.
+Adjust the fonts and positions as needed.
 """
 
 import time
@@ -29,7 +31,6 @@ import subprocess
 # ---------------------------
 # Setup & Initialization
 # ---------------------------
-
 # Define the OLED reset pin (GPIO 4, active low)
 oled_reset = gpiozero.OutputDevice(4, active_high=False)
 
@@ -49,7 +50,7 @@ oled_reset.off()
 time.sleep(0.1)
 oled_reset.on()
 
-# Create the OLED display object (typically at I2C address 0x3C)
+# Create the OLED display object (usually I2C address 0x3C)
 oled = adafruit_ssd1306.SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=0x3C)
 oled.fill(0)
 oled.show()
@@ -58,18 +59,13 @@ oled.show()
 image = Image.new('1', (WIDTH, HEIGHT))
 draw = ImageDraw.Draw(image)
 
-# Load fonts
+# Load fonts – adjust paths and sizes as desired.
 try:
+    # For both modes, we'll use the same main font.
     main_font = ImageFont.truetype('PixelOperator.ttf', 16)
 except Exception as e:
     print("Error loading PixelOperator.ttf, using default font:", e)
     main_font = ImageFont.load_default()
-
-try:
-    icon_font = ImageFont.truetype('lineawesome-webfont.ttf', 18)
-except Exception as e:
-    print("Error loading lineawesome-webfont.ttf, using default font:", e)
-    icon_font = ImageFont.load_default()
 
 # ---------------------------
 # Helper Functions
@@ -94,7 +90,7 @@ def fetch_metrics():
     except Exception:
         metrics['Mem'] = "N/A"
     try:
-        # Concatenate info for all disks (lines starting with /dev)
+        # Concatenate info for all disks (for all /dev entries)
         metrics['Disk'] = subprocess.check_output("df -h | awk '$1 ~ /^\\/dev/ {printf \"%s:%s(%s) \", $1, $3, $5}'", shell=True).decode('utf-8').strip()
     except Exception:
         metrics['Disk'] = "N/A"
@@ -103,7 +99,7 @@ def fetch_metrics():
 def draw_scrolling_text_infinite(y, text, offset):
     """
     Draws text with infinite horizontal scrolling at vertical position y.
-    Returns the updated offset.
+    Returns updated offset.
     """
     # Use textbbox to compute text width (instead of deprecated textsize)
     bbox = draw.textbbox((0, 0), text, font=main_font)
@@ -123,17 +119,16 @@ def draw_scrolling_text_infinite(y, text, offset):
 def display_scrolling_mode(metrics, offsets):
     """
     Display metrics in scrolling mode.
-      - Line 0: Static IP.
+      - Line 0: "IP: <IP>" (static).
       - Line 1: "CPU: <load> | Temp: <temp>" (scrolls).
       - Line 2: "Mem: <mem>" (scrolls).
       - Line 3: "Disk: <disk>" (scrolls).
     Returns updated offsets.
     """
-    # Clear the image
     draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-    # Draw static IP on line 0 (y=0)
+    # Static IP on line 0
     draw.text((0, 0), "IP: " + metrics['IP'], font=main_font, fill=255)
-    # Prepare scrolling text lines
+    # Scrolling text for other lines:
     cpu_text = "CPU: " + metrics['CPU'] + " | Temp: " + metrics['Temp']
     offsets['CPU'] = draw_scrolling_text_infinite(16, cpu_text, offsets['CPU'])
     offsets['Mem'] = draw_scrolling_text_infinite(32, "Mem: " + metrics['Mem'], offsets['Mem'])
@@ -142,42 +137,22 @@ def display_scrolling_mode(metrics, offsets):
     oled.show()
     return offsets
 
-def display_icon_mode(metrics):
+def display_overview_mode(metrics):
     """
-    Display metrics in icon mode with a fixed layout.
-    This updated layout uses smaller fonts so the info fits on the screen.
-    Layout (modified):
-      - Row 1 (y=0): Temperature icon and text on left; Memory icon and text on right.
-      - Row 2 (y=18): Disk icon and text on left; CPU icon and text on right.
-      - Row 3 (y=36): WiFi/IP icon on left and IP text on right.
+    Display metrics in a fixed (overview) layout using a larger, clear format.
+    Layout (each row uses main_font at 16):
+      Row 0 (y=0): "IP: <IP>"
+      Row 1 (y=16): "CPU: <load> | Temp: <temp>"
+      Row 2 (y=32): "Mem: <mem>"
+      Row 3 (y=48): "Disk: <disk>"
+
+    If a line is too long, it will be drawn as-is (or you could add logic to truncate).
     """
     draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-    # Use smaller fonts for icon mode:
-    try:
-        icon_small = ImageFont.truetype('lineawesome-webfont.ttf', 14)
-    except Exception as e:
-        icon_small = ImageFont.load_default()
-    try:
-        main_small = ImageFont.truetype('PixelOperator.ttf', 12)
-    except Exception as e:
-        main_small = ImageFont.load_default()
-
-    # Row 1: Temperature and Memory
-    draw.text((0, 0), chr(62609), font=icon_small, fill=255)           # Temperature icon
-    draw.text((18, 0), str(metrics['Temp']), font=main_small, fill=255)    # Temperature text
-    draw.text((70, 0), chr(62776), font=icon_small, fill=255)             # Memory icon
-    draw.text((90, 0), str(metrics['Mem']), font=main_small, fill=255)      # Memory text
-
-    # Row 2: Disk and CPU
-    draw.text((0, 18), chr(63426), font=icon_small, fill=255)             # Disk icon
-    draw.text((18, 18), str(metrics['Disk']), font=main_small, fill=255)     # Disk text
-    draw.text((70, 18), chr(62171), font=icon_small, fill=255)             # CPU icon
-    draw.text((90, 18), str(metrics['CPU']), font=main_small, fill=255)      # CPU text
-
-    # Row 3: WiFi/IP
-    draw.text((0, 36), chr(61931), font=icon_small, fill=255)             # WiFi/IP icon
-    draw.text((18, 36), str(metrics['IP']), font=main_small, fill=255)       # IP text
-
+    draw.text((0, 0), "IP: " + metrics['IP'], font=main_font, fill=255)
+    draw.text((0, 16), "CPU: " + metrics['CPU'] + " | Temp: " + metrics['Temp'], font=main_font, fill=255)
+    draw.text((0, 32), "Mem: " + metrics['Mem'], font=main_font, fill=255)
+    draw.text((0, 48), "Disk: " + metrics['Disk'], font=main_font, fill=255)
     oled.image(image)
     oled.show()
 
@@ -186,7 +161,7 @@ def display_icon_mode(metrics):
 # ---------------------------
 # Offsets for scrolling mode
 offsets = {'CPU': 0, 'Mem': 0, 'Disk': 0}
-current_mode = 0  # 0 = scrolling mode, 1 = icon mode
+current_mode = 0  # 0 = scrolling mode, 1 = overview (fixed layout) mode
 mode_start_time = time.time()
 
 while True:
@@ -195,7 +170,7 @@ while True:
         current_mode = 1 - current_mode  # Toggle between 0 and 1
         mode_start_time = time.time()
 
-    # Update metrics (you can adjust the update frequency as desired)
+    # Fetch the latest metrics
     metrics = fetch_metrics()
 
     if current_mode == 0:
@@ -203,6 +178,6 @@ while True:
         offsets = display_scrolling_mode(metrics, offsets)
         time.sleep(0.1)
     else:
-        # Icon mode: update every LOOPTIME seconds
-        display_icon_mode(metrics)
+        # Overview mode: update once per LOOPTIME
+        display_overview_mode(metrics)
         time.sleep(LOOPTIME)
