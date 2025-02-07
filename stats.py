@@ -8,115 +8,110 @@ Modify by Lauren Garcia to make more dynamic information
 """
 
 import time
-import subprocess
 import psutil
 import board
 import busio
-import gpiozero
 from PIL import Image, ImageDraw, ImageFont
 import adafruit_ssd1306
 
-# Use gpiozero to control the reset pin
-oled_reset_pin = gpiozero.OutputDevice(4, active_high=False)  # GPIO 4 for reset, active low
-
-# Display Parameters
+# OLED display parameters
 WIDTH = 128
 HEIGHT = 64
-BORDER = 5
 
-# Display refresh interval (in seconds)
-LOOPTIME = 1.0
-
-# Use I2C for communication
+# Initialize I2C and the OLED display (I2C address is typically 0x3C)
 i2c = board.I2C()
-
-# Manually reset the display (high -> low -> high for reset pulse)
-oled_reset_pin.on()
-time.sleep(0.1)
-oled_reset_pin.off()
-time.sleep(0.1)
-oled_reset_pin.on()
-
-# Create the OLED display object (I2C address may be 0x3C or 0x3D)
 oled = adafruit_ssd1306.SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=0x3C)
 
 # Clear the display
 oled.fill(0)
 oled.show()
 
-# Create a blank image for drawing
-image = Image.new("1", (oled.width, oled.height))
+# Create an image buffer for drawing (1-bit color)
+image = Image.new("1", (WIDTH, HEIGHT))
 draw = ImageDraw.Draw(image)
 
-# (Optional) Draw a white background once if desired:
-# draw.rectangle((0, 0, oled.width, oled.height), outline=255, fill=255)
+# Try to load a custom font; if not available, load the default font.
+# Adjust the font size to be small so more text lines fit.
+try:
+    font_small = ImageFont.truetype('PixelOperator.ttf', 10)
+except IOError:
+    font_small = ImageFont.load_default()
 
-# Load a custom font (make sure the .ttf file is in the same directory or specify its path)
-# Adjust the font size as needed. Here we use two sizes: a larger one and a small one for extra info.
-font_large = ImageFont.truetype('PixelOperator.ttf', 16)
-font_small = ImageFont.truetype('PixelOperator.ttf', 12)
+# Determine the line height and maximum number of lines that can fit on the screen.
+line_height = font_small.getsize("A")[1]
+max_lines = HEIGHT // line_height
 
-while True:
-    # Clear the image by drawing a black rectangle over it.
-    draw.rectangle((0, 0, oled.width, oled.height), outline=0, fill=0)
+# Duration (in seconds) to display each page of information.
+page_duration = 5
 
-    # --- Dynamic Information Gathering ---
+def get_cpu_info():
+    """Return a string with the current CPU load percentage."""
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    return f"CPU: {cpu_percent:.1f}%"
 
-    # 1. IP Address (using the original shell command)
+def get_disk_info():
+    """
+    Gather disk usage information for each partition.
+    Returns a list of strings in the format:
+      "<device>: <used>/<total>GB (<percent>%)"
+    """
+    disk_info = []
+    partitions = psutil.disk_partitions(all=False)
+    for part in partitions:
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            # Convert bytes to gigabytes
+            used_gb = usage.used / (1024**3)
+            total_gb = usage.total / (1024**3)
+            # Extract the device name (e.g., sda1)
+            dev_name = part.device.split('/')[-1]
+            disk_line = f"{dev_name}: {used_gb:.1f}/{total_gb:.1f}GB {usage.percent}%"
+            disk_info.append(disk_line)
+        except Exception:
+            continue
+    return disk_info
+
+def display_info():
+    """Gathers system info and displays it on the OLED with pagination."""
+    # Get CPU and disk info
+    cpu_line = get_cpu_info()
+    disk_lines = get_disk_info()
+
+    # Combine all info; CPU info at the top
+    all_lines = [cpu_line] + disk_lines
+
+    # Calculate the total number of pages needed
+    total_pages = (len(all_lines) + max_lines - 1) // max_lines
+
+    for page in range(total_pages):
+        # Clear the image buffer by drawing a black rectangle over the entire screen
+        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
+
+        # Determine the slice of lines to display on this page
+        start_idx = page * max_lines
+        end_idx = min(start_idx + max_lines, len(all_lines))
+        page_lines = all_lines[start_idx:end_idx]
+
+        # Draw each line on the image buffer
+        for i, line in enumerate(page_lines):
+            y = i * line_height
+            draw.text((0, y), line, font=font_small, fill=255)
+
+        # Update the OLED with the new image and pause to let the viewer read it
+        oled.image(image)
+        oled.show()
+        time.sleep(page_duration)
+
+def main():
+    """Continuously update the OLED display with system information."""
+    while True:
+        display_info()
+
+if __name__ == "__main__":
     try:
-        ip = subprocess.check_output("hostname -I | cut -d' ' -f1", shell=True)
-        ip_address = ip.decode('utf-8').strip()
-    except Exception:
-        ip_address = "N/A"
-
-    # 2. CPU Usage (using psutil)
-    cpu_percent = psutil.cpu_percent(interval=0.1)  # Quick measurement
-    cpu_text = f"CPU: {cpu_percent:.1f}%"
-
-    # 3. Memory Usage (using psutil)
-    mem = psutil.virtual_memory()
-    mem_used = mem.used / (1024 * 1024)   # in MB
-    mem_total = mem.total / (1024 * 1024)   # in MB
-    mem_text = f"Mem: {mem_used:.0f}/{mem_total:.0f}MB {mem.percent}%"
-
-    # 4. Disk Usage (using psutil)
-    disk = psutil.disk_usage('/')
-    disk_used = disk.used / (1024 * 1024 * 1024)  # in GB
-    disk_total = disk.total / (1024 * 1024 * 1024)  # in GB
-    disk_text = f"Disk: {disk_used:.0f}/{disk_total:.0f}GB {disk.percent}%"
-
-    # 5. Temperature (still using vcgencmd)
-    try:
-        temp = subprocess.check_output("vcgencmd measure_temp | cut -f2 -d'='", shell=True)
-        temperature = temp.decode('utf-8').strip()
-    except Exception:
-        temperature = "N/A"
-
-    # 6. Clock - current time (HH:MM:SS)
-    current_time = time.strftime("%H:%M:%S")
-
-    # --- Drawing on the OLED ---
-    # You can adjust coordinates and fonts as needed.
-
-    # Top line: IP address
-    draw.text((0, 0), f"IP: {ip_address}", font=font_small, fill=255)
-
-    # Second line: CPU usage (left) and Temperature (right)
-    draw.text((0, 12), cpu_text, font=font_small, fill=255)
-    draw.text((70, 12), f"Temp:{temperature}", font=font_small, fill=255)
-
-    # Third line: Memory usage
-    draw.text((0, 24), mem_text, font=font_small, fill=255)
-
-    # Fourth line: Disk usage
-    draw.text((0, 36), disk_text, font=font_small, fill=255)
-
-    # Bottom line: Clock (could be centered or right aligned)
-    draw.text((0, 48), f"Time: {current_time}", font=font_small, fill=255)
-
-    # Update the OLED display with the image.
-    oled.image(image)
-    oled.show()
-
-    # Wait before updating again.
-    time.sleep(LOOPTIME)
+        main()
+    except KeyboardInterrupt:
+        # Clear the display before exiting
+        oled.fill(0)
+        oled.show()
+        print("Exiting dynamic OLED display script.")
