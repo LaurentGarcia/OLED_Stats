@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
+
 """
-Enhanced OLED Stats Display for Raspberry Pi
-Based on the original script by Michael Klements, enhanced with dynamic information
-using psutil and a live clock.
+Combined OLED Stats Display with Mode Switching
 
-Modify by Lauren Garcia to make more dynamic information
+This script alternates between two display modes every 30 seconds:
 
-Enhanced OLED Stats Display with Horizontal Scrolling
+Mode 0 (Scrolling Mode):
+  - Line 0: Static IP address.
+  - Line 1: CPU load and Temperature (infinite horizontal scrolling if needed).
+  - Line 2: Memory usage (scrolling if needed).
+  - Line 3: Disk usage (scrolling if needed).
 
-Based on Michael Klements’ original script for the Raspberry Pi Desktop Case with OLED Stats Display.
-This version keeps the IP line static on the first line while horizontally scrolling the CPU, memory,
-and disk metrics if the text is wider than the 128×64 display.
+Mode 1 (Icon Mode):
+  - A fixed layout with icons and text for Temperature, Memory, Disk, CPU, and IP.
+    (The layout has been adjusted to use smaller fonts so that the info fits on the 128x64 screen.)
+
+Adjust the scroll speed, fonts, and swap interval as needed.
 """
 
 import time
@@ -97,10 +102,10 @@ def fetch_metrics():
 
 def draw_scrolling_text_infinite(y, text, offset):
     """
-    Draw text with infinite horizontal scrolling at vertical position y.
-    Returns updated offset.
+    Draws text with infinite horizontal scrolling at vertical position y.
+    Returns the updated offset.
     """
-    # Use textbbox to get text dimensions (instead of deprecated textsize)
+    # Use textbbox to compute text width (instead of deprecated textsize)
     bbox = draw.textbbox((0, 0), text, font=main_font)
     text_width = bbox[2] - bbox[0]
     if text_width <= WIDTH:
@@ -110,7 +115,7 @@ def draw_scrolling_text_infinite(y, text, offset):
     total_length = text_width + spacing
     effective_offset = offset % total_length
     draw.text((-effective_offset, y), text, font=main_font, fill=255)
-    # Draw second instance if needed for seamless scrolling
+    # Draw a second instance if needed for seamless scrolling
     if text_width - effective_offset < WIDTH:
         draw.text((text_width - effective_offset + spacing, y), text, font=main_font, fill=255)
     return offset + 2  # Increase offset (adjust for scroll speed)
@@ -139,30 +144,40 @@ def display_scrolling_mode(metrics, offsets):
 
 def display_icon_mode(metrics):
     """
-    Display metrics in icon mode with a fixed layout and icons.
-    Layout (with offsets):
-      - Temperature icon (chr(62609)) and text at top-left.
-      - Memory icon (chr(62776)) and text at top-right.
-      - Disk icon (chr(63426)) and text below temperature.
-      - CPU icon (chr(62171)) and text below memory.
-      - WiFi/IP icon (chr(61931)) and IP text at the bottom.
+    Display metrics in icon mode with a fixed layout.
+    This updated layout uses smaller fonts so the info fits on the screen.
+    Layout (modified):
+      - Row 1 (y=0): Temperature icon and text on left; Memory icon and text on right.
+      - Row 2 (y=18): Disk icon and text on left; CPU icon and text on right.
+      - Row 3 (y=36): WiFi/IP icon on left and IP text on right.
     """
     draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-    padding = -2
-    top = padding
-    x = 0
-    # Draw icons
-    draw.text((x, top + 5), chr(62609), font=icon_font, fill=255)       # Temperature icon
-    draw.text((x + 65, top + 5), chr(62776), font=icon_font, fill=255)    # Memory icon
-    draw.text((x, top + 25), chr(63426), font=icon_font, fill=255)        # Disk icon
-    draw.text((x + 65, top + 25), chr(62171), font=icon_font, fill=255)   # CPU icon
-    draw.text((x, top + 45), chr(61931), font=icon_font, fill=255)        # WiFi/IP icon
-    # Draw text next to icons
-    draw.text((x + 19, top + 5), str(metrics['Temp']), font=main_font, fill=255)
-    draw.text((x + 87, top + 5), str(metrics['Mem']), font=main_font, fill=255)
-    draw.text((x + 19, top + 25), str(metrics['Disk']), font=main_font, fill=255)
-    draw.text((x + 87, top + 25), str(metrics['CPU']), font=main_font, fill=255)
-    draw.text((x + 19, top + 45), str(metrics['IP']), font=main_font, fill=255)
+    # Use smaller fonts for icon mode:
+    try:
+        icon_small = ImageFont.truetype('lineawesome-webfont.ttf', 14)
+    except Exception as e:
+        icon_small = ImageFont.load_default()
+    try:
+        main_small = ImageFont.truetype('PixelOperator.ttf', 12)
+    except Exception as e:
+        main_small = ImageFont.load_default()
+
+    # Row 1: Temperature and Memory
+    draw.text((0, 0), chr(62609), font=icon_small, fill=255)           # Temperature icon
+    draw.text((18, 0), str(metrics['Temp']), font=main_small, fill=255)    # Temperature text
+    draw.text((70, 0), chr(62776), font=icon_small, fill=255)             # Memory icon
+    draw.text((90, 0), str(metrics['Mem']), font=main_small, fill=255)      # Memory text
+
+    # Row 2: Disk and CPU
+    draw.text((0, 18), chr(63426), font=icon_small, fill=255)             # Disk icon
+    draw.text((18, 18), str(metrics['Disk']), font=main_small, fill=255)     # Disk text
+    draw.text((70, 18), chr(62171), font=icon_small, fill=255)             # CPU icon
+    draw.text((90, 18), str(metrics['CPU']), font=main_small, fill=255)      # CPU text
+
+    # Row 3: WiFi/IP
+    draw.text((0, 36), chr(61931), font=icon_small, fill=255)             # WiFi/IP icon
+    draw.text((18, 36), str(metrics['IP']), font=main_small, fill=255)       # IP text
+
     oled.image(image)
     oled.show()
 
