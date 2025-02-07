@@ -28,15 +28,15 @@ import subprocess
 # Use gpiozero to control the reset pin (GPIO 4, active low)
 oled_reset_pin = gpiozero.OutputDevice(4, active_high=False)
 
-# Display parameters
+# Display Parameters
 WIDTH = 128
 HEIGHT = 64
-LOOPTIME = 1.0  # How often (in seconds) to update metrics
+LOOPTIME = 1.0  # Update metrics every 1 second
 
-# I2C setup
+# I2C Setup
 i2c = board.I2C()
 
-# Manually reset the display: high -> low -> high (for reset pulse)
+# Manually reset the display (high -> low -> high for reset pulse)
 oled_reset_pin.on()
 time.sleep(0.1)
 oled_reset_pin.off()
@@ -50,11 +50,11 @@ oled = adafruit_ssd1306.SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=0x3C)
 oled.fill(0)
 oled.show()
 
-# Create a blank image for drawing and get a drawing object
+# Create a blank image for drawing
 image = Image.new("1", (oled.width, oled.height))
 draw = ImageDraw.Draw(image)
 
-# Load font (using PixelOperator.ttf at size 16; adjust path/size if needed)
+# Load the custom font (PixelOperator.ttf at size 16). If not found, use the default font.
 try:
     font = ImageFont.truetype('PixelOperator.ttf', 16)
 except Exception as e:
@@ -62,114 +62,104 @@ except Exception as e:
     font = ImageFont.load_default()
 
 # ---------------------------
-# Helper Function: Scrolling Text
+# Helper: Infinite Scrolling Text Function
 # ---------------------------
-def draw_scrolling_text(y, text, offset):
+def draw_scrolling_text_infinite(y, text, offset):
     """
-    Draws the given text on line starting at vertical position y,
-    scrolling horizontally if its width exceeds the display width.
+    Draws text that scrolls infinitely horizontally on line starting at vertical position y.
+    If the text is wider than the display, it scrolls with a gap before repeating.
 
     Parameters:
-      y      - vertical coordinate where the text is drawn.
-      text   - the text string to display.
-      offset - the current horizontal offset (in pixels) for scrolling.
+      y      - Vertical coordinate for drawing the text.
+      text   - The text string to display.
+      offset - The current horizontal scroll offset.
 
     Returns:
       The updated offset for the next iteration.
     """
     text_width, _ = draw.textsize(text, font=font)
+    # If text fits in the display, just draw it and return 0 offset.
     if text_width <= WIDTH:
-        # If the text fits within the display width, draw it normally at x=0.
         draw.text((0, y), text, font=font, fill=255)
-        return 0  # No scrolling needed; reset offset.
-    else:
-        # If text is too wide, scroll it horizontally.
-        if offset > text_width - WIDTH:
-            offset = 0  # Reset scrolling when the end is reached.
-        # Draw text shifted to the left by 'offset' pixels.
-        draw.text((-offset, y), text, font=font, fill=255)
-        return offset + 2  # Increase offset for next update (adjust '2' for scroll speed)
+        return 0
+    spacing = 20  # Gap (in pixels) between repetitions of the text.
+    total_length = text_width + spacing
+    # effective_offset is the offset modulo total_length for infinite scrolling.
+    effective_offset = offset % total_length
+    # Draw the first instance
+    draw.text((-effective_offset, y), text, font=font, fill=255)
+    # If needed, draw a second instance to create a seamless scroll.
+    if text_width - effective_offset < WIDTH:
+        draw.text((text_width - effective_offset + spacing, y), text, font=font, fill=255)
+    return offset + 2  # Increase offset by 2 pixels per refresh (adjust for scroll speed)
 
 # ---------------------------
-# Offsets for scrolling on each dynamic line
+# Offsets for each scrolling line
 # ---------------------------
 cpu_offset = 0
 mem_offset = 0
 disk_offset = 0
 
 # ---------------------------
+# Initialize Metric Variables
+# ---------------------------
+IP = "N/A"
+cpu_text = "CPU: N/A"
+mem_display = "Mem: N/A"
+disk_text = "Disk: N/A"
+temp_text = "Temp: N/A"
+
+last_update = 0
+
+# ---------------------------
 # Main Loop
 # ---------------------------
 while True:
-    # ---------------------------
-    # Gather Metrics
-    # ---------------------------
-    try:
-        # Get IP address
-        cmd = "hostname -I | cut -d' ' -f1"
-        IP = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-    except Exception:
-        IP = "N/A"
+    current_time = time.time()
+    # Update metrics every LOOPTIME seconds
+    if current_time - last_update >= LOOPTIME:
+        last_update = current_time
+        try:
+            IP = subprocess.check_output("hostname -I | cut -d' ' -f1", shell=True).decode('utf-8').strip()
+        except Exception:
+            IP = "N/A"
+        try:
+            CPU = subprocess.check_output("top -bn1 | grep load | awk '{printf \"CPU: %.2f\", $(NF-2)}'", shell=True).decode('utf-8').strip()
+        except Exception:
+            CPU = "CPU: N/A"
+        try:
+            Temp = subprocess.check_output("vcgencmd measure_temp | cut -f2 -d'='", shell=True).decode('utf-8').strip()
+        except Exception:
+            Temp = "Temp: N/A"
+        try:
+            MemUsage = subprocess.check_output("free -m | awk 'NR==2{printf \"Mem: %.1f/%.1fGB %s\", $3/1024,$2/1024,($3/$2)*100}'", shell=True).decode('utf-8').strip()
+        except Exception:
+            MemUsage = "Mem: N/A"
+        try:
+            # Use an awk command that prints info for all /dev disks in one line.
+            Disk = subprocess.check_output("df -h | awk '$1 ~ /^\\/dev/ {printf \"%s:%s(%s) \", $1, $3, $5}'", shell=True).decode('utf-8').strip()
+        except Exception:
+            Disk = "Disk: N/A"
 
-    try:
-        # Get CPU load (using top command)
-        cmd = "top -bn1 | grep load | awk '{printf \"CPU: %.2f\", $(NF-2)}'"
-        CPU = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-    except Exception:
-        CPU = "CPU: N/A"
+        # Combine CPU and Temperature into one string for line 1.
+        cpu_text = CPU + " | " + Temp
+        mem_display = MemUsage
+        disk_text = Disk
 
-    try:
-        # Get temperature
-        cmd = "vcgencmd measure_temp | cut -f2 -d'='"
-        Temp = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-    except Exception:
-        Temp = "Temp: N/A"
+    # Clear the image (fill with black)
+    draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
 
-    try:
-        # Get memory usage
-        cmd = "free -m | awk 'NR==2{printf \"Mem: %.1f/%.1fGB %s\", $3/1024,$2/1024,($3/$2)*100}'"
-        MemUsage = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-    except Exception:
-        MemUsage = "Mem: N/A"
+    # Draw the static IP line on line 0 (y=0)
+    draw.text((0, 0), "IP: " + IP, font=font, fill=255)
 
-    try:
-        # Get disk usage; modify command as needed to include multiple disks.
-        cmd = "df -h | awk '$NF==\"/\"{printf \"Disk: %d/%dGB %s\", $3,$2,$5}'"
-        Disk = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-    except Exception:
-        Disk = "Disk: N/A"
+    # Draw infinite scrolling for dynamic metrics:
+    cpu_offset = draw_scrolling_text_infinite(16, cpu_text, cpu_offset)
+    mem_offset = draw_scrolling_text_infinite(32, mem_display, mem_offset)
+    disk_offset = draw_scrolling_text_infinite(48, disk_text, disk_offset)
 
-    # Combine CPU and temperature into one string.
-    cpu_text = CPU + " | " + Temp
-    # Use MemUsage and Disk directly.
-    mem_text = MemUsage
-    disk_text = Disk
+    # Update the OLED display with the current image
+    oled.image(image)
+    oled.show()
 
-    # ---------------------------
-    # Scroll Animation within this update cycle
-    # ---------------------------
-    # To get smooth scrolling, update the display several times within LOOPTIME.
-    refresh_interval = 0.1  # seconds per scroll update
-    iterations = int(LOOPTIME / refresh_interval)
-
-    for i in range(iterations):
-        # Clear the image (fill with black)
-        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-
-        # Draw static IP line (Line 0 at y=0)
-        draw.text((0, 0), "IP: " + IP, font=font, fill=255)
-
-        # Draw scrolling CPU and Temp on Line 1 (y = 16)
-        cpu_offset = draw_scrolling_text(16, cpu_text, cpu_offset)
-
-        # Draw scrolling Memory usage on Line 2 (y = 32)
-        mem_offset = draw_scrolling_text(32, mem_text, mem_offset)
-
-        # Draw scrolling Disk info on Line 3 (y = 48)
-        disk_offset = draw_scrolling_text(48, disk_text, disk_offset)
-
-        # Update the OLED display with the current image buffer
-        oled.image(image)
-        oled.show()
-
-        time.sleep(refresh_interval)
+    # Short sleep for smooth scrolling (adjust as needed)
+    time.sleep(0.1)
